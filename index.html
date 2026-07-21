@@ -87,7 +87,7 @@
   .badge.followup-soon{ background:#fef3c7; color:var(--warn); }
   .badge.interview-count{ background:#ede9fe; color:#7c3aed; }
 
-  .card-actions{ margin-top:8px; border-top:1px solid var(--border); padding-top:8px; }
+  .card-actions{ margin-top:8px; border-top:1px solid var(--border); padding-top:8px; display:flex; flex-direction:column; gap:4px; }
   .tailor-btn{
     width:100%; font-size:11.5px; padding:5px 8px; border-radius:6px; border:1px solid var(--accent-light);
     background:var(--accent-light); color:var(--accent); font-weight:600; cursor:pointer; display:flex;
@@ -95,6 +95,17 @@
   }
   .tailor-btn:hover{ background:#c7ddfb; }
   .tailor-btn.copied{ background:#e6f4ea; border-color:#e6f4ea; color:var(--ok); }
+  .claude-link-btn{
+    width:100%; font-size:11.5px; padding:6px 8px; border-radius:6px; border:1px solid var(--accent);
+    background:var(--accent); color:#fff; font-weight:600; cursor:pointer; display:flex;
+    align-items:center; justify-content:center; gap:5px; transition:background .15s;
+  }
+  .claude-link-btn:hover{ background:#1d4ed8; }
+  .copy-fallback{
+    background:none; border:none; color:var(--muted); font-size:10.5px; cursor:pointer; text-decoration:underline;
+    padding:2px 0; text-align:center;
+  }
+  .copy-fallback:hover{ color:var(--accent); }
 
   .toast{
     position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(20px); background:#1f2328; color:#fff;
@@ -311,6 +322,7 @@
       <button class="danger" id="deleteBtn" style="display:none;">Delete</button>
       <div style="flex:1;"></div>
       <button id="copyPromptBtn" title="Copy a ready-made prompt to paste into a Claude chat">✎ Copy Tailoring Prompt</button>
+      <button id="openClaudeBtn" title="Open a new Claude Cowork session with this prompt, your CV, and the Applications folder attached" style="background:var(--accent); color:#fff; border-color:var(--accent);">🔗 Open in Claude</button>
       <button id="cancelBtn">Cancel</button>
       <button class="primary" id="saveBtn">Save</button>
     </div>
@@ -462,6 +474,33 @@
     return lines.join('\n');
   }
 
+  // Builds a claude://cowork/new deep link — opens Claude Desktop directly to a new Cowork session
+  // with the prompt prefilled and the CV file + Applications folder already attached (pending your
+  // confirmation in Claude). Only works if Claude Desktop is installed on the device clicking it;
+  // the "Copy prompt" fallback covers other devices or other AI tools.
+  function buildClaudeCoworkUrl(job){
+    const prompt = buildTailorPrompt(job);
+    const params = [
+      'q=' + encodeURIComponent(prompt),
+      'file=' + encodeURIComponent(CV_PATH),
+      'folder=' + encodeURIComponent(APPLICATIONS_DIR)
+    ];
+    return 'claude://cowork/new?' + params.join('&');
+  }
+
+  function openInClaude(job){
+    if(!job.company || !job.role){
+      alert('Fill in Company and Role first so the prompt has something to work with.');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = buildClaudeCoworkUrl(job);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast(`Opening Claude Cowork for ${job.company}… (needs Claude Desktop installed)`);
+  }
+
   function copyToClipboard(text){
     if(navigator.clipboard && navigator.clipboard.writeText){
       return navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
@@ -554,20 +593,27 @@
       card.addEventListener('dragend', () => { card.style.opacity = '1'; });
     });
 
-    // Per-card "Copy Tailoring Prompt" button
-    board.querySelectorAll('.tailor-btn').forEach(btn => {
+    // Per-card "Open in Claude" button (claude://cowork deep link)
+    board.querySelectorAll('.claude-link-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const job = jobs.find(j => j.id === btn.dataset.claudeId);
+        if(!job) return;
+        openInClaude(job);
+      });
+    });
+
+    // Per-card "Copy prompt instead" fallback
+    board.querySelectorAll('.copy-fallback').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const job = jobs.find(j => j.id === btn.dataset.tailorId);
         if(!job) return;
         copyToClipboard(buildTailorPrompt(job)).then(() => {
           showToast(`Prompt copied for ${job.company} — paste it into a Claude chat.`);
-          btn.classList.add('copied');
-          btn.textContent = '✓ Copied!';
-          setTimeout(() => {
-            btn.classList.remove('copied');
-            btn.textContent = '✎ Copy Tailoring Prompt';
-          }, 1800);
+          const original = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = original; }, 1800);
         });
       });
     });
@@ -603,7 +649,8 @@
         <div class="role">${escapeHtml(j.role)}${j.location ? ' · ' + escapeHtml(j.location) : ''}</div>
         <div class="meta-row">${badges.join('')}</div>
         <div class="card-actions">
-          <button type="button" class="tailor-btn" data-tailor-id="${j.id}">✎ Copy Tailoring Prompt</button>
+          <button type="button" class="claude-link-btn" data-claude-id="${j.id}">🔗 Open in Claude</button>
+          <button type="button" class="copy-fallback" data-tailor-id="${j.id}">Copy prompt instead</button>
         </div>
       </div>
     `;
@@ -703,6 +750,17 @@
     copyToClipboard(buildTailorPrompt(draftJob)).then(() => {
       showToast(`Prompt copied for ${draftJob.company} — paste it into a Claude chat.`);
     });
+  });
+
+  document.getElementById('openClaudeBtn').addEventListener('click', () => {
+    const draftJob = {
+      company: document.getElementById('f-company').value.trim(),
+      role: document.getElementById('f-role').value.trim(),
+      location: document.getElementById('f-location').value.trim(),
+      link: document.getElementById('f-link').value.trim(),
+      notes: document.getElementById('f-notes').value.trim()
+    };
+    openInClaude(draftJob);
   });
 
   document.getElementById('addJobBtn').addEventListener('click', () => openModal(null));
