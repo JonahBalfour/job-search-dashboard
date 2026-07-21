@@ -155,6 +155,12 @@
   .link-row{ font-size:12px; color:var(--muted); }
   .link-row a{ color:var(--accent); }
 
+  .file-attachment{ font-size:11.5px; color:var(--muted); margin-top:5px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .file-attachment a{ color:var(--accent); text-decoration:none; }
+  .file-attachment a:hover{ text-decoration:underline; }
+  .file-remove-btn{ background:none; border:none; color:var(--danger); font-size:11px; cursor:pointer; padding:0; text-decoration:underline; }
+  .badge.file-yes{ background:#ede9fe; color:#7c3aed; }
+
   footer{ text-align:center; padding:20px; color:var(--muted); font-size:12px; }
 
   @media (max-width:700px){
@@ -289,6 +295,18 @@
           <div class="form-field">
             <label>CV version used</label>
             <input type="text" id="f-cvVersion" placeholder="e.g. CV_v3_tech.pdf">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label>Attach tailored CV (PDF/Word, under 300KB)</label>
+            <input type="file" id="f-cvFile" accept=".pdf,.doc,.docx">
+            <div class="file-attachment" id="cvFileInfo"></div>
+          </div>
+          <div class="form-field">
+            <label>Attach tailored cover letter (PDF/Word, under 300KB)</label>
+            <input type="file" id="f-clFile" accept=".pdf,.doc,.docx">
+            <div class="file-attachment" id="clFileInfo"></div>
           </div>
         </div>
       </fieldset>
@@ -633,6 +651,8 @@
     const badges = [];
     badges.push(`<span class="badge ${j.coverLetterSent ? 'cl-yes':'cl-no'}">CL ${j.coverLetterSent ? '✓' : '–'}</span>`);
     badges.push(`<span class="badge ${j.cvSent ? 'cv-yes':'cv-no'}">CV ${j.cvSent ? '✓' : '–'}</span>`);
+    if(j.cvFile) badges.push(`<span class="badge file-yes" title="${escapeHtml(j.cvFile.name)}">📎 CV file</span>`);
+    if(j.coverLetterFile) badges.push(`<span class="badge file-yes" title="${escapeHtml(j.coverLetterFile.name)}">📎 CL file</span>`);
     if(j.interviews && j.interviews.length){
       badges.push(`<span class="badge interview-count">${j.interviews.length} interview${j.interviews.length>1?'s':''}</span>`);
     }
@@ -660,6 +680,92 @@
   const deleteBtn = document.getElementById('deleteBtn');
   let interviewDraft = [];
 
+  // ---------- File attachments ----------
+  // Files are stored as base64 data URLs directly on the job document (not Firebase Storage —
+  // that now requires the paid Blaze billing plan even for free-tier usage, which felt like an
+  // unnecessary hurdle for a personal tool). Firestore documents cap out at 1MiB, so we keep each
+  // attachment small; a normal tailored CV/cover letter PDF is well under this.
+  // Capped at 300KB per file so a CV *and* cover letter attached to the same job stay comfortably
+  // under Firestore's 1MiB document limit even when base64-encoded (which inflates size by ~33%).
+  const MAX_ATTACHMENT_BYTES = 300 * 1024;
+  // undefined = no change from what's saved; an object = a newly picked file; null = "remove this file"
+  let cvFileDraft, clFileDraft;
+
+  function readFileAsAttachment(file){
+    return new Promise((resolve, reject) => {
+      if(file.size > MAX_ATTACHMENT_BYTES){
+        reject(new Error(`"${file.name}" is ${Math.round(file.size/1024)}KB — please keep attachments under ${Math.round(MAX_ATTACHMENT_BYTES/1024)}KB (try exporting a lighter PDF).`));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        dataUrl: reader.result,
+        uploadedAt: new Date().toISOString()
+      });
+      reader.onerror = () => reject(reader.error || new Error('Could not read that file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderFileInfo(kind){
+    // kind: 'cv' or 'cl'
+    const draft = kind === 'cv' ? cvFileDraft : clFileDraft;
+    const existing = editingId ? jobs.find(j => j.id === editingId) : null;
+    const savedFile = existing ? (kind === 'cv' ? existing.cvFile : existing.coverLetterFile) : null;
+    const wrap = document.getElementById(kind === 'cv' ? 'cvFileInfo' : 'clFileInfo');
+
+    if(draft === null){
+      wrap.innerHTML = `<span>Will be removed when you save.</span> <button type="button" class="file-remove-btn" data-undo="${kind}">Undo</button>`;
+    } else if(draft && draft.dataUrl){
+      wrap.innerHTML = `<span>New file: ${escapeHtml(draft.name)} (${Math.round(draft.size/1024)}KB) — will save on Save.</span>`;
+    } else if(savedFile){
+      wrap.innerHTML = `<a href="${savedFile.dataUrl}" download="${escapeHtml(savedFile.name)}">📄 ${escapeHtml(savedFile.name)}</a> ` +
+        `<span>(${Math.round((savedFile.size||0)/1024)}KB)</span> ` +
+        `<button type="button" class="file-remove-btn" data-remove="${kind}">Remove</button>`;
+    } else {
+      wrap.innerHTML = `<span>No file attached yet.</span>`;
+    }
+
+    wrap.querySelectorAll('[data-remove]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if(btn.dataset.remove === 'cv'){ cvFileDraft = null; } else { clFileDraft = null; }
+        renderFileInfo(btn.dataset.remove);
+      });
+    });
+    wrap.querySelectorAll('[data-undo]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if(btn.dataset.undo === 'cv'){ cvFileDraft = undefined; } else { clFileDraft = undefined; }
+        renderFileInfo(btn.dataset.undo);
+      });
+    });
+  }
+
+  document.getElementById('f-cvFile').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if(!file) return;
+    try{
+      cvFileDraft = await readFileAsAttachment(file);
+      renderFileInfo('cv');
+    }catch(err){
+      alert(err.message);
+    }
+    e.target.value = '';
+  });
+  document.getElementById('f-clFile').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if(!file) return;
+    try{
+      clFileDraft = await readFileAsAttachment(file);
+      renderFileInfo('cl');
+    }catch(err){
+      alert(err.message);
+    }
+    e.target.value = '';
+  });
+
   function openModal(id){
     editingId = id || null;
     const job = id ? jobs.find(j => j.id === id) : null;
@@ -682,6 +788,11 @@
 
     interviewDraft = job && job.interviews ? JSON.parse(JSON.stringify(job.interviews)) : [];
     renderInterviewList();
+
+    cvFileDraft = undefined;
+    clFileDraft = undefined;
+    renderFileInfo('cv');
+    renderFileInfo('cl');
 
     overlay.classList.add('open');
     document.getElementById('f-company').focus();
@@ -788,6 +899,9 @@
       notes: document.getElementById('f-notes').value.trim(),
       interviews: interviewDraft.filter(iv => iv.date || iv.type || iv.notes)
     };
+    // cvFileDraft/clFileDraft: undefined = don't touch the field, object = new file, null = clear it
+    if(cvFileDraft !== undefined) data.cvFile = cvFileDraft;
+    if(clFileDraft !== undefined) data.coverLetterFile = clFileDraft;
 
     const action = editingId
       ? updateJobDoc(editingId, data)
