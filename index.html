@@ -475,15 +475,17 @@
   }
 
   // Builds a claude://cowork/new deep link — opens Claude Desktop directly to a new Cowork session
-  // with the prompt prefilled and the CV file + Applications folder already attached (pending your
-  // confirmation in Claude). Only works if Claude Desktop is installed on the device clicking it;
-  // the "Copy prompt" fallback covers other devices or other AI tools.
+  // with the prompt prefilled and the CV file already attached (pending your confirmation in Claude).
+  // Note: we deliberately don't also attach `folder` here — combining file + folder + q in one link
+  // seems to reset the composer text after the confirmation dialogs, wiping out the prompt. The
+  // destination folder is already spelled out in the prompt text itself, so nothing is lost.
+  // Only works if Claude Desktop is installed on the device clicking it; the "Copy prompt" fallback
+  // covers other devices or other AI tools.
   function buildClaudeCoworkUrl(job){
     const prompt = buildTailorPrompt(job);
     const params = [
       'q=' + encodeURIComponent(prompt),
-      'file=' + encodeURIComponent(CV_PATH),
-      'folder=' + encodeURIComponent(APPLICATIONS_DIR)
+      'file=' + encodeURIComponent(CV_PATH)
     ];
     return 'claude://cowork/new?' + params.join('&');
   }
